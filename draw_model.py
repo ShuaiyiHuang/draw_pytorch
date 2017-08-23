@@ -4,8 +4,9 @@ from utility import *
 import torch.functional as F
 
 class DrawModel(nn.Module):
-    def __init__(self,T,A,B,z_size,N,dec_size,enc_size):
+    def __init__(self,T,A,B,z_size,N,dec_size,enc_size,use_att):
         super(DrawModel,self).__init__()
+        self.use_att=use_att
         self.T = T
         # self.batch_size = batch_size
         self.A = A
@@ -17,15 +18,24 @@ class DrawModel(nn.Module):
         self.cs = [0] * T
         self.logsigmas,self.sigmas,self.mus = [0] * T,[0] * T,[0] * T
 
-        self.encoder = nn.LSTMCell(2 * N * N + dec_size, enc_size)
-        self.encoder_gru = nn.GRUCell(2 * N * N + dec_size, enc_size)
+        if use_att:
+            print 'use attention'
+            self.encoder = nn.LSTMCell(2 * N * N + dec_size, enc_size)
+            self.encoder_gru = nn.GRUCell(2 * N * N + dec_size, enc_size)
+            self.dec_w_linear = nn.Linear(dec_size, N * N)
+        else:
+            print 'not use attention'
+            self.encoder = nn.LSTMCell(2 * A * B, enc_size)
+            self.encoder_gru = nn.GRUCell(2 * A * B, enc_size)
+            self.dec_w_linear = nn.Linear(dec_size, A * B)
+            
+        self.decoder = nn.LSTMCell(z_size,dec_size)
+        self.decoder_gru = nn.GRUCell(z_size,dec_size)
         self.mu_linear = nn.Linear(dec_size, z_size)
         self.sigma_linear = nn.Linear(dec_size, z_size)
 
-        self.decoder = nn.LSTMCell(z_size,dec_size)
-        self.decoder_gru = nn.GRUCell(z_size,dec_size)
+
         self.dec_linear = nn.Linear(dec_size,5)
-        self.dec_w_linear = nn.Linear(dec_size,N*N)
 
         self.sigmoid = nn.Sigmoid()
 
@@ -71,7 +81,11 @@ class DrawModel(nn.Module):
             c_prev = Variable(torch.zeros(self.batch_size,self.A * self.B)) if t == 0 else self.cs[t-1]
             x_hat = x - self.sigmoid(c_prev)     # 3
             r_t = self.read(x,x_hat,h_dec_prev)
-            h_enc_prev,enc_state = self.encoder(torch.cat((r_t,h_dec_prev),1),(h_enc_prev,enc_state))
+            #why concatenate?
+            if self.use_att:
+                h_enc_prev,enc_state = self.encoder(torch.cat((r_t,h_dec_prev),1),(h_enc_prev,enc_state))
+            else:
+                h_enc_prev, enc_state = self.encoder(r_t, (h_enc_prev, enc_state))
             # h_enc = self.encoder_gru(torch.cat((r_t,h_dec_prev),1),h_enc_prev)
             z,self.mus[t],self.logsigmas[t],self.sigmas[t] = self.sampleQ(h_enc_prev)
             h_dec,dec_state = self.decoder(z, (h_dec_prev, dec_state))
@@ -137,31 +151,42 @@ class DrawModel(nn.Module):
         return self.filterbank(gx,gy,sigma2,delta),gamma
     # correct
     def read(self,x,x_hat,h_dec_prev):
-        (Fx,Fy),gamma = self.attn_window(h_dec_prev)
-        def filter_img(img,Fx,Fy,gamma,A,B,N):
-            Fxt = Fx.transpose(2,1)
-            img = img.view(-1,B,A)
-            # img = img.transpose(2,1)
-            # glimpse = matmul(Fy,matmul(img,Fxt))
-            glimpse = Fy.bmm(img.bmm(Fxt))
-            glimpse = glimpse.view(-1,N*N)
-            return glimpse * gamma.view(-1,1).expand_as(glimpse)
-        x = filter_img(x,Fx,Fy,gamma,self.A,self.B,self.N)
-        x_hat = filter_img(x_hat,Fx,Fy,gamma,self.A,self.B,self.N)
-        return torch.cat((x,x_hat),1)
+        # print 'x and x_hat:',x.size(),x_hat.size()
+        if self.use_att:
+            (Fx,Fy),gamma = self.attn_window(h_dec_prev)
+            def filter_img(img,Fx,Fy,gamma,A,B,N):
+                Fxt = Fx.transpose(2,1)
+                img = img.view(-1,B,A)
+                # img = img.transpose(2,1)
+                # glimpse = matmul(Fy,matmul(img,Fxt))
+                glimpse = Fy.bmm(img.bmm(Fxt))
+                glimpse = glimpse.view(-1,N*N)
+                return glimpse * gamma.view(-1,1).expand_as(glimpse)
+            x = filter_img(x,Fx,Fy,gamma,self.A,self.B,self.N)
+            x_hat = filter_img(x_hat,Fx,Fy,gamma,self.A,self.B,self.N)
+            x_read=torch.cat((x,x_hat),1)
+            # print 'x_read size:',x_read.size()
+        else:
+            x_read=torch.cat((x,x_hat),1)
+        return x_read
 
     # correct
     def write(self,h_dec=0):
-        w = self.dec_w_linear(h_dec)
-        w = w.view(self.batch_size,self.N,self.N)
-        # w = Variable(torch.ones(4,5,5) * 3)
-        # self.batch_size = 4
-        (Fx,Fy),gamma = self.attn_window(h_dec)
-        Fyt = Fy.transpose(2,1)
-        # wr = matmul(Fyt,matmul(w,Fx))
-        wr = Fyt.bmm(w.bmm(Fx))
-        wr = wr.view(self.batch_size,self.A*self.B)
-        return wr / gamma.view(-1,1).expand_as(wr)
+        if self.use_att:
+            w = self.dec_w_linear(h_dec)
+            w = w.view(self.batch_size,self.N,self.N)
+            # w = Variable(torch.ones(4,5,5) * 3)
+            # self.batch_size = 4
+            (Fx,Fy),gamma = self.attn_window(h_dec)
+            Fyt = Fy.transpose(2,1)
+            # wr = matmul(Fyt,matmul(w,Fx))
+            wr = Fyt.bmm(w.bmm(Fx))
+            wr = wr.view(self.batch_size,self.A*self.B)
+            to_write=wr / gamma.view(-1,1).expand_as(wr)
+            # print 'to_write size:',to_write.size()
+        else:
+            to_write=self.dec_w_linear(h_dec)
+        return to_write
 
     def sampleQ(self,h_enc):
         e = self.normalSample()

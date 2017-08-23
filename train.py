@@ -15,7 +15,7 @@ train_loader = torch.utils.data.DataLoader(
                        transforms.ToTensor()])),
     batch_size=batch_size, shuffle=False)
 
-model = DrawModel(T,A,B,z_size,N,dec_size,enc_size)
+model = DrawModel(T,A,B,z_size,N,dec_size,enc_size,use_att)
 optimizer = optim.Adam(model.parameters(),lr=learning_rate,betas=(beta1,0.999))
 
 if USE_CUDA:

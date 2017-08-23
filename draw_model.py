@@ -106,7 +106,15 @@ class DrawModel(nn.Module):
         temp,t_sigma = align(temp,sigma2)
         temp = temp / (t_sigma * 2)
         F = torch.exp(-torch.pow(temp,2))
-        F = F / (F.sum(2).expand_as(F) + epsilon)
+        # print 'F size:',F.size()
+        # F = F / (F.sum(2).expand_as(F) + epsilon)
+        Z=torch.unsqueeze(torch.unsqueeze(F.sum(2).sum(1),1),2).expand_as(F)
+        # print Z
+        F=F/Z
+        # print torch.sum(F)
+        # for batch in range(F.size()[0]):
+        #     Z=torch.sum(F[batch,:,:])
+        #     F[batch,:,:]=F[batch,:,:].clone()/Z
         return F
 
     #correct

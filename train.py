@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 torch.set_default_tensor_type('torch.FloatTensor')
 
 train_loader = torch.utils.data.DataLoader(
-    datasets.MNIST('data/', train=True, download=True,
+    datasets.MNIST('../data', train=True, download=True,
                    transform=transforms.Compose([
                        transforms.ToTensor()])),
     batch_size=batch_size, shuffle=False)
